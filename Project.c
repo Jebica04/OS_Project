@@ -128,21 +128,48 @@ void updateSnapshot(const char *basePath)
 
 int main(int argc, char *argv[])
 {
-    
-    if(argc < 2)
+    char *outputDir = NULL;
+
+    if (argc <= 2)
     {
-        write(STDERR_FILENO, "error: There should be only one argument!\n", strlen("error: There should be only one argument!\n"));
+        write(STDERR_FILENO, "error: At least one directory should be provided!\n", strlen("error: At least one directory should be provided!\n"));
         exit(EXIT_FAILURE);
-        }
+    }
     else
     {
-        for(int i = 1; i<argc; i++)
+        // Parse command-line arguments
+        int i;
+        for (i = 1; i < argc; i++)
         {
-            char *path = argv[1];
-            updateSnapshot(path);
+            if (strcmp(argv[i], "-o") == 0)
+            {
+                // If "-o" option is found, set the output directory
+                if (i + 1 < argc)
+                {
+                    outputDir = argv[i + 1];
+                    i++; // Skip the next argument (output directory path)
+                }
+                else
+                {
+                    write(STDERR_FILENO, "error: Output directory not specified after -o option!\n", strlen("error: Output directory not specified after -o option!\n"));
+                    exit(EXIT_FAILURE);
+                }
+            }
+            else
+            {
+                // Treat as a directory to monitor
+                char *path = argv[i];
+                updateSnapshot(path);
+            }
         }
+    }
+
+    if (outputDir)
+    {
+        printf("Output directory: %s\n", outputDir);
     }
 
     return 0;
 }
+
 
