@@ -28,7 +28,7 @@ This output directory will be specified using the `-o` option. For example, the 
 //FUNCTION TO READ THE DIRECTORY PUT AS ARGUMENT IN TERMINAL & RECURSIVELY TRAVERSE EVERY 
 //SUB_DIRECTORY FROM IT. IT SAVES IN A SNAPSHOT.TXT THE PATH AND NAME OF EVERY FILE
 
-void listFilesRecursively(const char *path, int snapshot_fd)
+void parseDirectory(const char *path, int snapshot_fd)
 {
     DIR *d = opendir(path);
     struct dirent *dir_file;
@@ -70,7 +70,7 @@ void listFilesRecursively(const char *path, int snapshot_fd)
             {       
                 //if an entry is a directory
                 //recursively call again the function with the new path     
-                listFilesRecursively(new_path, snapshot_fd);
+                parseDirectory(new_path, snapshot_fd);
             }
         }
 
@@ -104,6 +104,24 @@ void createSnapshot(const char *basePath)
     printf("Snapshot created: %s\n", filename);
 }
 
+
+void createSnapshotv2(const char *basePath) 
+{
+    char tempPath[100] = "\0";
+    strcpy(tempPath,basePath);
+
+    for (int i = 0; i < strlen(tempPath); ++i) 
+    {
+        if(tempPath[i] == '/')
+        {
+            tempPath[i] = '_';
+        }
+    }
+    
+    tempPath[strlen(tempPath)-1] = '\0';
+    return strdup(tempPath);
+}
+
 void updateSnapshot(const char *basePath) 
 {
     char newSnapshot[MAX_PATH_LENGTH];
@@ -123,53 +141,75 @@ void updateSnapshot(const char *basePath)
     printf("Snapshot updated.\n");
 }
 
-
-
-
-int main(int argc, char *argv[])
+char * CreatePath(char *snapshotPath, char *dirPath) //creates the adress to the snapshot folder and what the name of the new Snapshot should be
 {
-    char *outputDir = NULL;
+ 
+    unsigned long pathSize = 100 + strlen("Snapshots/") + 5;
+    char tempPath[pathSize];
+    
+    strcpy(tempPath, snapshotPath);
+    strcat(tempPath, "snapshot");
+    
+    strcat(tempPath, makeSnapshotName(dirPath));
+    strcat(tempPath, ".txt");
+    return strdup(tempPath);
+}
 
-    if (argc <= 2)
+
+int FileToWriteIn(char outputPath[201],char DirectoryName[201]) // i create a file directory to write in it .
+{
+    char *filePath = CreatePath(outputPath, DirectoryName);
+   // printf("File path: %s\n", filePath); // Debug print
+    
+    int fd = open(CreatePath(outputPath,DirectoryName), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd == -1) 
     {
-        write(STDERR_FILENO, "error: At least one directory should be provided!\n", strlen("error: At least one directory should be provided!\n"));
-        exit(EXIT_FAILURE);
+        perror("Error opening file");
+        return -1;
     }
-    else
+    return fd;
+}
+
+
+int getFileDescriptor(char *path)
+{
+    int fileDescriptor = open(path,O_WRONLY | O_CREAT | O_TRUNC, 0777);
+    return fileDescriptor;
+}
+
+
+int main(int argc, char* argv[])
+{
+    if (argc <= 4) 
     {
-        // Parse command-line arguments
-        int i;
-        for (i = 1; i < argc; i++)
+        printf("Wrong number of arguments\n");
+        return -1;
+    }
+
+    if (strcmp(argv[1],"-o") != 0) 
+    {
+        printf("Second argument should be -o\n");
+        printf("And state the output folder for the snapshots\n");
+        return -1;
+    }
+
+    char path[100] = "\0";
+
+    for (int i = 3; i < argc; ++i) 
+    {
+        int fd = getFileDescriptor(makePath(argv[2],argv[i]));
+
+        strcpy(path,argv[i]);
+        DIR *directory = opendir(path);
+        if (directory == NULL)
         {
-            if (strcmp(argv[i], "-o") == 0)
-            {
-                // If "-o" option is found, set the output directory
-                if (i + 1 < argc)
-                {
-                    outputDir = argv[i + 1];
-                    i++; // Skip the next argument (output directory path)
-                }
-                else
-                {
-                    write(STDERR_FILENO, "error: Output directory not specified after -o option!\n", strlen("error: Output directory not specified after -o option!\n"));
-                    exit(EXIT_FAILURE);
-                }
-            }
-            else
-            {
-                // Treat as a directory to monitor
-                char *path = argv[i];
-                updateSnapshot(path);
-            }
+            printf("Could not open directory\n");
+            return -1;
         }
-    }
 
-    if (outputDir)
-    {
-        printf("Output directory: %s\n", outputDir);
+        parseDirectory(directory, path );
     }
 
     return 0;
 }
-
 
