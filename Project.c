@@ -13,528 +13,474 @@
 
 #define MAX_LINE 128
 
-int countProcesses=0; 
-int countGrandchildProcesess=0; 
-int countCorrupted=0; 
+int numProcesses = 0;  //Counts the number of child processes 
+int numSubProcesses = 0;  //Counts the number of grandchildren processes for each child process
+int numCorruptedFiles = 0; // Counts the number of potential malecious files
 
+const char *monitoredDirName; //Only stores the name of the monitored directory, not the full path
 
+void ExploreDirectories(const char *path, int snapshotFd, char *isolatedPath);
 
-void exploreDirectories(const char *path, int snapshotFd, const char *baseDirName, char *isoPath) 
-{
-    DIR *dir = opendir(path);
-    if (!dir) 
-    {
-        fprintf(stderr, "Error: Failed to open directory \"%s\"\n", path);
-        return;
-    }
+void CreateSnapshot(char *path, char *outputDir, char *isolatedDir);
 
-    struct dirent *entry;
+void PreviousSnapshotCompare(const char *outpuPpath, const char *snapshotFileName);
 
-    char *fullPath = NULL;
-    char *entryInfo = NULL;
+int CompareSnapshots(const char *outputDir, const char *currentSnapshotFile);
 
-    char *current_dir_name = basename((char *)path);
+void CheckPermissionsAndAnalyze(const char *entryPath, struct stat fileStats, char *isolatedDir, int snapshotFd);
 
-    while ((entry = readdir(dir)) != NULL) 
-    {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-        {
-            continue;
-        }
+int AnalyzeFile(const char *entryPath, int pipeFd);
 
-        // Construct full path of the directory entry
-        size_t path_len = strlen(path);
-        size_t name_len = strlen(entry->d_name);
-        fullPath = realloc(fullPath, path_len + name_len + 2); // +2 for '/' and '\0'
-
-        if (!fullPath) 
-        {
-            fprintf(stderr, "Error: Memory allocation failed for path \"%s\"\n", path);
-            break;
-        }
-        sprintf(fullPath, "%s/%s", path, entry->d_name);
-
-        // Get file information
-        struct stat st;
-        if (lstat(fullPath, &st) == -1) 
-        {
-            fprintf(stderr, "Error: Failed to get information for path \"%s\"\n", entry->d_name);
-            break;
-        }
-
-        // Process directory entry
-        checkPermissionsAndAnalyze(fullPath, st, baseDirName, isoPath, snapshotFd);
-
-        // Format entry information
-        size_t info_length = snprintf(NULL, 0, "Path: %s\nSize: %ld bytes\nAccess Rights: %c%c%c %c%c%c %c%c%c\nHard Links: %ld\n",
-                                      fullPath, st.st_size,
-                                      (st.st_mode & S_IRUSR) ? 'r' : '-',
-                                      (st.st_mode & S_IWUSR) ? 'w' : '-',
-                                      (st.st_mode & S_IXUSR) ? 'x' : '-',
-                                      (st.st_mode & S_IRGRP) ? 'r' : '-',
-                                      (st.st_mode & S_IWGRP) ? 'w' : '-',
-                                      (st.st_mode & S_IXGRP) ? 'x' : '-',
-                                      (st.st_mode & S_IROTH) ? 'r' : '-',
-                                      (st.st_mode & S_IWOTH) ? 'w' : '-',
-                                      (st.st_mode & S_IXOTH) ? 'x' : '-',
-                                      st.st_nlink);
-
-        entryInfo = realloc(entryInfo, info_length + 1); // +1 for '\0'
-
-        if (!entryInfo) 
-        {
-            fprintf(stderr, "Error: Memory allocation failed for entry \"%s\"\n", entry->d_name);
-            break;
-        }
-
-        sprintf(entryInfo, "Path: %s\nSize: %ld bytes\nAccess Rights: %c%c%c %c%c%c %c%c%c\nHard Links: %ld\n",
-                fullPath, st.st_size,
-                (st.st_mode & S_IRUSR) ? 'r' : '-',
-                (st.st_mode & S_IWUSR) ? 'w' : '-',
-                (st.st_mode & S_IXUSR) ? 'x' : '-',
-                (st.st_mode & S_IRGRP) ? 'r' : '-',
-                (st.st_mode & S_IWGRP) ? 'w' : '-',
-                (st.st_mode & S_IXGRP) ? 'x' : '-',
-                (st.st_mode & S_IROTH) ? 'r' : '-',
-                (st.st_mode & S_IWOTH) ? 'w' : '-',
-                (st.st_mode & S_IXOTH) ? 'x' : '-',
-                st.st_nlink);
-
-        // Write entry info to snapshot file
-        write(snapshotFd, entryInfo, strlen(entryInfo));
-        write(snapshotFd, "\n", 1);
-
-        // Recursively explore subdirectories
-        if (S_ISDIR(st.st_mode))
-        {
-            exploreDirectories(fullPath, snapshotFd, baseDirName, isoPath);
-        }
-    }
-
-    free(fullPath);
-    free(entryInfo);
-    closedir(dir);
-}
-
-
-
-void createSnapshot(const char *path, const char *outputPath, const char *isolatedPath) 
-{
-    char *dirName = basename((char *)path); // Get the name of the input directory
-
-    DIR *dirCheck = opendir(path); // Check if the directory for monitoring exists
-
-    if (!dirCheck) 
-    {
-        fprintf(stderr, "Error: The provided directory for monitoring does not exist \"%s\"\n", dirName);
-        return;
-    }
-    closedir(dirCheck);
-
-    // Check and create the output directory if it doesn't exist
-    dirCheck = opendir(outputPath);
-
-    if (!dirCheck) 
-    {
-        mkdir(outputPath, 0777);
-    }
-    closedir(dirCheck);
-
-    // Check and create the isolated directory if it doesn't exist
-    dirCheck = opendir(isolatedPath);
-
-    if (!dirCheck) 
-    {
-        mkdir(isolatedPath, 0777);
-    }
-    closedir(dirCheck);
-
-    // Construct the snapshot file name
-    char snapshotFileName[FILENAME_MAX];
-    snprintf(snapshotFileName, sizeof(snapshotFileName), "%s/%s_Snapshot.txt", outputPath, dirName);
-
-    int snapshotFd = open(snapshotFileName, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-    
-    if (snapshotFd == -1) 
-    {
-        fprintf(stderr, "Error: Failed to open the snapshot file for \"%s\"\n", dirName);
-        return;
-    }
-
-    // Call function to read directories and create snapshot
-    exploreDirectories(path, snapshotFd, dirName, isolatedPath);
-
-    // Output a success message
-    fprintf(stdout, "Snapshot created successfully for \"%s\"\n", dirName);
-
-    close(snapshotFd);
-
-    // Call function to compare with previous snapshot
-    getPreviousSnapshotThenCompare(outputPath, dirName, snapshotFileName);
-}
-
-
-
-void getPreviousSnapshotThenCompare(const char *outputPath, const char *dirName, const char *currentSnapshotFileName) 
-{
-    DIR *dir = opendir(outputPath);
-
-    if (!dir) 
-    {
-        fprintf(stderr, "Error: Failed to open the output directory \"%s\"\n", dirName);
-        return;
-    }
-
-    int prevSnapshotNo = 0;
-    char prevSnapshotFileName[FILENAME_MAX] = "";
-
-    struct dirent *dirEntry;
-    
-    while ((dirEntry = readdir(dir)) != NULL) 
-    {
-        const char *fileName = dirEntry->d_name;
-
-        // Check if the file matches the snapshot naming pattern for the directory
-        if (strstr(fileName, dirName) == fileName && strstr(fileName, "_Snapshot_") != NULL) 
-        {
-            prevSnapshotNo++;
-
-            // Save the name of the latest previous snapshot file
-            if (prevSnapshotNo == 1) 
-            {
-                snprintf(prevSnapshotFileName, sizeof(prevSnapshotFileName), "%s/%s", outputPath, fileName);
-            }
-        }
-    }
-
-    closedir(dir);
-
-    // If no previous snapshot is found, print a message and return
-    if (prevSnapshotNo < 2) 
-    {
-        fprintf(stdout, "(Comparing) No previous snapshots found for \"%s\"\n", dirName);
-        return;
-    }
-
-    // Compare the current snapshot with the latest previous snapshot
-    int isDifferent = compareSnapshots(prevSnapshotFileName, currentSnapshotFileName, dirName);
-
-    if (!isDifferent) 
-    {
-        // No differences found
-        fprintf(stdout, "(Comparing) No differences found between the current and previous snapshot for \"%s\"\n", dirName);
-        unlink(prevSnapshotFileName); // Delete the previous snapshot file
-    } 
-    else 
-    {
-        // Differences found
-        fprintf(stdout, "(Comparing) Differences found between the current and previous snapshot => Overriding the previous snapshot for \"%s\"\n", dirName);
-        unlink(prevSnapshotFileName);               // Delete the previous snapshot file
-        rename(currentSnapshotFileName, prevSnapshotFileName); // Rename the current snapshot to the previous one
-    }
-}
-
-
-
-int compareSnapshots(const char *prevSnapshotFileName, const char *currentSnapshotFileName, const char *dirName) 
-{
-    int snapshotFdCurrent = open(currentSnapshotFileName, O_RDONLY, S_IRUSR);
-
-    if (snapshotFdCurrent == -1) 
-    {
-        fprintf(stderr, "Error: Failed to open the current snapshot file for \"%s\"\n", dirName);
-        return -1;
-    }
-
-    int snapshotFdPrev = open(prevSnapshotFileName, O_RDONLY, S_IRUSR);
-
-    if (snapshotFdPrev == -1) 
-    {
-        fprintf(stderr, "Error: Failed to open the previous snapshot file for \"%s\"\n", dirName);
-        close(snapshotFdCurrent);
-        return -1;
-    }
-
-    char currentLine[MAX_LINE];
-    char prevLine[MAX_LINE];
-    int isDifferent = 0;
-
-    ssize_t currentRead, prevRead;
-
-    do 
-    {
-        currentRead = read(snapshotFdCurrent, currentLine, sizeof(currentLine) - 1);
-        prevRead = read(snapshotFdPrev, prevLine, sizeof(prevLine) - 1);
-
-        if (currentRead == -1 || prevRead == -1) 
-        {
-            fprintf(stderr, "Error: Failed to read snapshot files for \"%s\"\n", dirName);
-            isDifferent = -1;
-            break;
-        }
-
-        currentLine[currentRead] = '\0';
-        prevLine[prevRead] = '\0';
-
-        if ((currentRead != prevRead) || strcmp(currentLine, prevLine) != 0) 
-        {
-            isDifferent = 1;
-            break;
-        }
-    } 
-    while (currentRead > 0 && prevRead > 0);
-
-    close(snapshotFdCurrent);
-    close(snapshotFdPrev);
-
-    return isDifferent;
-}
-
-
-void checkPermissionsAndAnalyze(const char *dirEntryPath, struct stat permissions, const char *dirName, char *isolatedPath, int snapshotFd) 
-{
-    pid_t pid;
-
-    int pipeFd[2];
-
-    if (pipe(pipeFd) == -1) 
-    {
-        fprintf(stderr, "Error: pipe() failed for \"%s\"\n", basename((char *)dirEntryPath));
-        return;
-    }
-
-    // Check if all permissions are missing
-    if (!(permissions.st_mode & S_IXUSR) && !(permissions.st_mode & S_IRUSR) && !(permissions.st_mode & S_IWUSR) &&
-        !(permissions.st_mode & S_IRGRP) && !(permissions.st_mode & S_IWGRP) && !(permissions.st_mode & S_IXGRP) &&
-        !(permissions.st_mode & S_IROTH) && !(permissions.st_mode & S_IWOTH) && !(permissions.st_mode & S_IXOTH)) 
-    {
-
-        fprintf(stdout, "(Checking Permissions) \"%s\" from \"%s\" has no access rights => Performing Syntactic Analysis!\n",
-                basename((char *)dirEntryPath), dirName);
-
-        int fileStatus;
-        pid = fork();
-        countGrandchildProcesess++;
-
-        if (pid == 0) 
-        {
-            // Child process
-            close(snapshotFd); // Close snapshot file descriptor
-            close(pipeFd[0]);  // Close read end of the pipe
-
-            // Analyze the file and write results to the pipe
-            fileStatus = analyzeFile(dirEntryPath, dirName, pipeFd[1]);
-
-            close(pipeFd[1]);  // Close write end of the pipe
-            exit(fileStatus);  // Exit with analysis result
-        } 
-        else if (pid < 0) 
-        {
-            fprintf(stderr, "Error: fork() for child failed for \"%s\"\n", basename((char *)dirEntryPath));
-            return;
-        } 
-        else 
-        {
-            // Parent process
-            resultOfAnalysis(pipeFd, dirEntryPath, isolatedPath, pid, dirName);
-            
-            fprintf(stdout, "Grandchild Process %d terminated with PID %d for file \"%s\" from \"%s\"\n",pid, getpid(), basename((char *)dirEntryPath), dirName);
-            write(STDOUT_FILENO, "\n", 1);
-        }
-    }
-}
-
-
-
-int analyzeFile(const char *filePath, const char *directoryName, int pipeFd) 
-{
-    // Give read access to the file
-    int giveAccess = chmod(filePath, S_IRUSR);
-
-    if (giveAccess == -1) 
-    {
-        fprintf(stderr, "Error: Failed to grant read access to \"%s\"\n", filePath);
-        return -1;
-    }
-
-    // Prepare the command to run the analysis script
-    char command[100];
-    snprintf(command, sizeof(command), "./verifyForMalicious.sh \"%s\"", filePath);
-
-    // Execute the analysis script
-    int fileStatus = system(command);
-    if (fileStatus == -1) 
-    {
-        fprintf(stderr, "Error: Failed to execute analysis script for \"%s\"\n", filePath);
-        return -1;
-    }
-
-    // Write the analysis result to the pipe
-    write(pipeFd, &fileStatus, sizeof(fileStatus));
-    close(pipeFd);
-
-    // Revoke read access to the file
-    giveAccess = chmod(filePath, 0);
-    if (giveAccess == -1) 
-    {
-        fprintf(stderr, "Error: Failed to revoke read access to \"%s\"\n", filePath);
-        return -1;
-    }
-    close(giveAccess);
-
-    return fileStatus;
-}
-
-
-
-void resultOfAnalysis(int pipeFd[2], const char *filePath, char *isolatedPath, pid_t pid, const char *directoryName) 
-{
-    close(pipeFd[1]); // Close write end of the pipe
-
-    int fileStatus;
-    read(pipeFd[0], &fileStatus, sizeof(fileStatus)); // Read result from the pipe
-    close(pipeFd[0]); // Close read end of the pipe
-
-    if (fileStatus != 0) 
-    {
-        // File is malicious or corrupted, move it to the isolated directory
-        char isolatedFilePath[PATH_MAX];
-        snprintf(isolatedFilePath, sizeof(isolatedFilePath), "%s/%s", isolatedPath, basename((char *)filePath));
-
-        if (rename(filePath, isolatedFilePath) == 0) 
-        {
-            fprintf(stdout, "(Syntactic Analysis) \"%s\" from \"%s\" is malicious or corrupted => Moved to the isolated directory!\n", basename((char *)filePath), directoryName);
-            countCorrupted++;
-        } 
-        else 
-        {
-            fprintf(stderr, "Error: Failed to move \"%s\" to the isolated directory\n", basename((char *)filePath));
-        }
-    } 
-    else 
-    {
-        fprintf(stdout, "(Syntactic Analysis) \"%s\" from \"%s\" is SAFE!\n", basename((char *)filePath), directoryName);
-    }
-}
-
-
+void HandleAnalysisResult(int pipeFd[2], const char *entryPath, char *isolatedDir, pid_t pid);
 
 int main(int argc, char *argv[]) 
 {
-    write(STDOUT_FILENO, "\n", 1);
+    write(STDOUT_FILENO, "\n", 1); // Write a newline character to stdout for formatting
 
+    // Check if there are sufficient arguments provided
     if (argc < 6) 
     {
-        fprintf(stderr, "Error: Not enough arguments! => Exiting program!\n");
+        // Print an error message to stderr and exit with failure status
+        write(STDERR_FILENO, "error: Insufficient arguments! Exiting.\n", strlen("error: Insufficient arguments! Exiting.\n"));
         exit(EXIT_FAILURE);
     }
 
+     // Initialize variables to store output path and isolated path
     char *outputPath = NULL;
     char *isolatedPath = NULL;
-    int oCount = 0, sCount = 0;
 
-    // Parse through all the arguments for error handling
+    // Parse command-line arguments to extract output and isolated paths
     for (int i = 1; i < argc; i++) 
     {
         if (strcmp(argv[i], "-o") == 0) 
         {
-            oCount++;
+            // Set the output path from the next argument
             outputPath = argv[i + 1];
+            i++; // Skip the next argument since it's the value for the option
         } 
         else if (strcmp(argv[i], "-s") == 0) 
         {
-            sCount++;
+            // Set the isolated path from the next argument
             isolatedPath = argv[i + 1];
-        }
-
-        // Checking if "-o" and "-s" arguments are consecutive
-        if ((strcmp(argv[i], "-o") == 0 && i + 1 < argc && strcmp(argv[i + 1], "-s") == 0) ||
-            (strcmp(argv[i], "-s") == 0 && i + 1 < argc && strcmp(argv[i + 1], "-o") == 0)) 
-        {
-            fprintf(stderr, "Error: Both \"-o\" and \"-s\" arguments cannot be provided consecutively! => Exiting program!\n");
-            exit(EXIT_FAILURE);
-        }
-
-        // Checking if argument "-o" or "-s" is not written in terminal
-        if (oCount < 1 && i + 1 == argc) 
-        {
-            fprintf(stderr, "Error: The argument \"-o\" was not detected in the terminal! => Exiting program!\n");
-            exit(EXIT_FAILURE);
-        }
-        if (sCount < 1 && i + 1 == argc) 
-        {
-            fprintf(stderr, "Error: The argument \"-s\" was not detected in the terminal! => Exiting program!\n");
-            exit(EXIT_FAILURE);
-        }
-
-        // Checking if argument "-o" or "-s" is more than once
-        if (oCount > 1) 
-        {
-            fprintf(stderr, "Error: The argument \"-o\" was detected more than once in the terminal! => Exiting program!\n");
-            exit(EXIT_FAILURE);
-        }
-        if (sCount > 1) 
-        {
-            fprintf(stderr, "Error: The argument \"-s\" was detected more than once in the terminal! => Exiting program!\n");
-            exit(EXIT_FAILURE);
-        }
-
-        // Checking if argument "-o" or "-s" is the last argument
-        if (strcmp(argv[i], "-o") == 0 && i + 1 == argc) 
-        {
-            fprintf(stderr, "Error: \"-o\" cannot be the last argument! => Exiting program!\n");
-            exit(EXIT_FAILURE);
-        }
-
-        if (strcmp(argv[i], "-s") == 0 && i + 1 == argc) 
-        {
-            fprintf(stderr, "Error: \"-s\" cannot be the last argument! => Exiting program!\n");
-            exit(EXIT_FAILURE);
+            i++; // Skip the next argument since it's the value for the option
         }
     }
 
-    // Parse again through all the arguments
+    // Check if both output path and isolated path are provided
+    if (outputPath == NULL || isolatedPath == NULL) 
+    {
+        // Print an error message to stderr and exit with failure status
+        write(STDERR_FILENO, "error: Invalid arguments! Exiting.\n", strlen("error: Invalid arguments! Exiting.\n"));
+        exit(EXIT_FAILURE);
+    }
+
+    pid_t pid;
+
+    // Forking for each directory provided as argument
     for (int i = 1; i < argc; i++) 
     {
-        if ((strcmp(argv[i], "-o") == 0 && i + 1 < argc) || (strcmp(argv[i], "-s") == 0 && i + 1 < argc)) 
+        if (strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "-s") == 0) 
         {
-            i++; // Skip next argument (-o or -s)
+            i++; // Skip the next argument 
         } 
         else 
         {
-            // The rest of the arguments are directories to be monitored
-            pid_t pid = fork();
-            countProcesses++;
+            // Get the path of the directory to process
+            char *path = argv[i];
+            pid = fork(); // Fork a new process
+            numProcesses++; // Increment the count of processes
 
             if (pid == 0) 
             {
-                char *path = argv[i];
-                createSnapshot(path, outputPath, isolatedPath);
-                fprintf(stdout, "Child Process %d terminated with PID %d and %d files with potential danger for \"%s\"\n", getpid(), countCorrupted, basename(path));
+                // Child process: perform snapshot creation and exit with success
+                CreateSnapshot(path, outputPath, isolatedPath);
+                fprintf(stdout, "Child Process %d terminated (PID: %d) - %d corrupted files found in \"%s\"\n", numProcesses, getpid(), numCorruptedFiles, monitoredDirName);
                 return EXIT_SUCCESS;
             } 
             else if (pid < 0) 
             {
-                fprintf(stderr, "Error: fork() for child failed!\n");
+                // Fork failed: print an error message and exit with failure
+                write(STDERR_FILENO, "Error: Fork failed!\n", strlen("Error: Fork failed!\n"));
                 return EXIT_FAILURE;
             }
         }
     }
 
-    // Wait for all child processes to complete
+    // Waiting for all child processes to finish
     for (int i = 1; i < argc; i++) 
     {
-        if ((strcmp(argv[i], "-o") == 0 && i + 1 < argc) || (strcmp(argv[i], "-s") == 0 && i + 1 < argc)) 
+        if (strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "-s") == 0) 
         {
-            i++; // Skip next argument (-o or -s)
+            i++; // Skip the next argument
         } 
         else 
         {
-            write(STDOUT_FILENO, "\n", 1);
-            wait(NULL);
+            wait(NULL); // Parent process: wait for a child process to terminate
         }
     }
 
-    write(STDOUT_FILENO, "\n", 1);
-    return EXIT_SUCCESS;
+    write(STDOUT_FILENO, "\n", 1); // Write a newline character to stdout for formatting
+    return EXIT_SUCCESS;  // Exit the main function with success status
+}
+
+
+void ExploreDirectories(const char *path, int snapshotFd, char *isolatedPath) 
+{
+    DIR *dir = opendir(path);
+    struct dirent *dirEntry;
+
+    char *entryPath = NULL; //Stores the name and path of every directory entry
+    char *fileInfo = NULL; //Stores the information of every directory entry
+
+    //Checks if the directory opening was sufccesful, if not, it printsan error messagew and exists the function
+    if (!dir) 
+    {
+        fprintf(stderr, "Error: Failed to open directory \"%s\"\n", monitoredDirName);
+        return;
+    }
+
+    //Enters a loop that reads each entry (file or subdirectory) within the opened directory.
+    while ((dirEntry = readdir(dir)) != NULL) 
+    {
+        //does not print the entries "." & ".."  in the snapshot file
+        if (strcmp(dirEntry->d_name, ".") == 0 || strcmp(dirEntry->d_name, "..") == 0)
+            continue;
+
+        //Allocates memory for the full path of the current directory entry (dirEntry). The +2 accounts for the potential separator ('/') and null terminator.
+        entryPath = realloc(entryPath, strlen(path) + strlen(dirEntry->d_name) + 2);
+        
+        //If the memory alication fails, the loop will break and will not monitorise further
+        if (!entryPath) 
+        {
+            fprintf(stderr, "Error: Memory allocation failed for path \"%s\"\n", path);
+            free(entryPath);
+            break;
+        }
+
+        sprintf(entryPath, "%s/%s", path, dirEntry->d_name); //Constructs the path for every entry
+
+        struct stat st;
+
+        //We get information with lstat and print the error message in case of failing
+        if (lstat(entryPath, &st) == -1) 
+        {
+            fprintf(stderr, "Error: Failed to get information for \"%s\"\n", dirEntry->d_name);
+            free(entryPath);
+            break;
+        }
+        else 
+          CheckPermissionsAndAnalyze(entryPath, st, isolatedPath, snapshotFd);
+
+        //Gets the size of each line used for reallocaating memory 
+        size_t dataLength = snprintf(NULL, 0, "Path: %s\nSize: %ld bytes\nPermissions: %c%c%c %c%c%c %c%c%c\nHard Links: %ld\n", entryPath, st.st_size, (st.st_mode & S_IRUSR) ? 'r' : '-', (st.st_mode & S_IWUSR) ? 'w' : '-', (st.st_mode & S_IXUSR) ? 'x' : '-', (st.st_mode & S_IRGRP) ? 'r' : '-', (st.st_mode & S_IWGRP) ? 'w' : '-', (st.st_mode & S_IXGRP) ? 'x' : '-', (st.st_mode & S_IROTH) ? 'r' : '-', (st.st_mode & S_IWOTH) ? 'w' : '-', (st.st_mode & S_IXOTH) ? 'x' : '-', st.st_nlink);
+
+        //Reallocating memory for fileInfo then write in it
+        fileInfo = realloc(fileInfo, dataLength + 1);
+        
+        //Verify if memory allocation works, if not, print error message
+        if (!fileInfo) 
+        {
+            fprintf(stderr, "Error: Memory allocation failed for entry \"%s\"\n", dirEntry->d_name);
+            free(fileInfo);
+            break;
+        }
+
+        sprintf(fileInfo, "Path: %s\nSize: %ld bytes\nPermissions: %c%c%c %c%c%c %c%c%c\nHard Links: %ld\n", entryPath, st.st_size, (st.st_mode & S_IRUSR) ? 'r' : '-', (st.st_mode & S_IWUSR) ? 'w' : '-', (st.st_mode & S_IXUSR) ? 'x' : '-', (st.st_mode & S_IRGRP) ? 'r' : '-', (st.st_mode & S_IWGRP) ? 'w' : '-', (st.st_mode & S_IXGRP) ? 'x' : '-', (st.st_mode & S_IROTH) ? 'r' : '-', (st.st_mode & S_IWOTH) ? 'w' : '-', (st.st_mode & S_IXOTH) ? 'x' : '-', st.st_nlink);
+
+        //Writing to the snapshot file the fileInfo and new line
+        write(snapshotFd, fileInfo, strlen(fileInfo));
+        write(snapshotFd, "\n", 1);
+
+        //If an entry is a directory, call the function again recursively with a new path
+        if (S_ISDIR(st.st_mode)) 
+        {
+            ExploreDirectories(entryPath, snapshotFd, isolatedPath);
+        }
+    }
+
+    free(entryPath);
+    free(fileInfo);
+    closedir(dir);
+}
+
+
+void CreateSnapshot(char *path, char *outputDir, char *isolatedDir) 
+{
+    char *dirName = basename((char *)path);  //From libgen library, gets the name of the input directory
+    monitoredDirName = dirName; //Storing the name in a global variable
+
+    //Checks if the directory given as argument for monitoring exist. If the path is incorrect the error message will be printed to stderr and it will be skipped.
+    DIR *dirCheck = opendir(path);
+    if (!dirCheck) 
+    {
+        fprintf(stderr, "Error: Directory \"%s\" does not exist.\n", dirName);
+        return;
+    }
+    closedir(dirCheck);
+
+    //Checking if the output directory given as argument exists. If it does not exists, then the directory will be created.
+    dirCheck=opendir(outputDir);
+    if (!dirCheck) 
+    {
+        mkdir(outputDir, 0777);
+    }
+    closedir(dirCheck);
+
+    //Checking if the isolated directory given as argument exists. If it does not exists, then the directory will be created.
+    dirCheck=opendir(isolatedDir);
+    if (!dirCheck) 
+    {
+        mkdir(isolatedDir, 0777);
+    }
+    closedir(dirCheck);
+
+    char snapshotFilePath[PATH_MAX];  //Buffer for storing the name of the snapshot file
+    time_t now = time(NULL);
+    struct tm *timestamp = localtime(&now);
+    char timestampStr[32];
+    time(&now); 
+
+    strftime(timestampStr, sizeof(timestampStr), "%Y.%m.%d_%H:%M:%S", timestamp);
+
+    //Constructing the snapshot file name
+    snprintf(snapshotFilePath, sizeof(snapshotFilePath), "%s/%s_Snapshot_%s.txt", outputDir, dirName, timestampStr);
+
+    int snapshotFd = open(snapshotFilePath, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    
+    if (snapshotFd == -1) 
+    {
+        fprintf(stderr, "Error: Failed to open snapshot file \"%s\"\n", snapshotFilePath);
+        return;
+    }
+
+    clock_t startTime = clock(); //Getting the cpu time used for ExploreDirectories function
+    ExploreDirectories(path, snapshotFd, isolatedDir);
+    clock_t endTime = clock();
+
+    double duration = (double)(endTime - startTime) / CLOCKS_PER_SEC;
+
+    fprintf(stdout, "Snapshot created successfully for \"%s\" in %.2f seconds.\n", dirName, duration);
+
+    close(snapshotFd);
+    PreviousSnapshotCompare(outputDir, snapshotFilePath);
+}
+
+
+void PreviousSnapshotCompare(const char *outpuPath, const char *snapshotFileName)
+{
+    DIR *d=opendir(outpuPath);
+    struct dirent *dirEntry;
+
+    //Checks if the directory opening was successful. If opening fails, it prints an error message to stderr and returns from the function.                                                                                
+    if(!d)
+    {
+        fprintf(stderr, "Error: Failed to open the output directory  \"%s\"\n", monitoredDirName);
+        return;
+    }
+
+    //Initializes variables used to track snapshot numbers and file names.
+    int prevSnapshotNr=0;
+    int currentSnapshotNo=1;
+    char prevSnapshotFileName[FILENAME_MAX];
+
+    //Iterates through each directory entry
+    while((dirEntry = readdir(d)) != NULL)
+    {
+        // Check if the directory entry corresponds to a monitored directory and a snapshot file
+        if(!(strstr(dirEntry->d_name, monitoredDirName) == dirEntry->d_name && strstr(dirEntry->d_name, "_Snapshot_") != NULL)) 
+          continue;
+
+        // Constructing the name of the previous snapshot file by copying and concatenating strings.
+        if(prevSnapshotNr < currentSnapshotNo)
+        {
+            strcpy(prevSnapshotFileName, outpuPath);    
+            strcat(prevSnapshotFileName, "/");            
+            strcat(prevSnapshotFileName, dirEntry->d_name);
+        }
+        prevSnapshotNr++;   
+    }
+    
+    //Checks if a valid previous snapshot file was found.If fewer than 2 snapshot files are found, it means no previous snapshot exists, and it prints a message before returning.
+    if(prevSnapshotNr < 2)
+    {
+        fprintf(stdout, "No snapshots were previously created for  \"%s\"\n", monitoredDirName);
+        return;
+    }
+        
+    //Calls the CompareSnapshots function to compare the current snapshot with the previous snapshot 
+    int IsDifferent=CompareSnapshots(prevSnapshotFileName, snapshotFileName);
+
+    //Depending on the comparison result, it prints a message indicating whether differences were found between snapshots.
+    if(!IsDifferent) //If no differences, it deletes the previous snapshot file.
+    {   
+        fprintf(stdout, "No differences found between the current and the previous snapshot for  \"%s\"\n", monitoredDirName);
+        unlink(prevSnapshotFileName); 
+    }
+    else //If differences exist, it overrides the previous snapshot by renaming the current snapshot file.
+    {
+        fprintf(stdout, "Difference found between the current and the previous snapshot => Overriding the previous snapshot for  \"%s\"\n", monitoredDirName);
+        unlink(prevSnapshotFileName);  
+        rename(snapshotFileName, prevSnapshotFileName);  
+    } 
+    
+    closedir(d);
+}
+
+
+int CompareSnapshots(const char *prevSnapshotFile, const char *currentSnapshotFile) 
+{
+    int snapshotFdCurrent=open(currentSnapshotFile, O_RDONLY, S_IRUSR); // Open the current snapshot file for reading
+    
+    // Print error message if failed to open current snapshot file
+    if(snapshotFdCurrent == -1)
+    {
+        fprintf(stderr, "Error: Failed to open the current snapshot file for  \"%s\"\n", monitoredDirName);
+        return -1;
+    }
+
+    int snapshotFdPrev=open(prevSnapshotFile, O_RDONLY, S_IRUSR); // Open the previous snapshot file for reading
+
+    // Print error message if failed to open previous snapshot file                                                      
+    if(snapshotFdPrev == -1)
+    {
+        fprintf(stderr, "Error: Failed to open the previous snapshot file for  \"%s\"\n", monitoredDirName);
+        return -1;
+    }
+
+    //Initializes variables
+    char currentLine[MAX_LINE]; //store lines read from snapshot files
+    char prevLine[MAX_LINE]; //store lines read from snapshot files
+
+    int IsDifferent=0; //track whether differences are found between snapshot files
+    
+    ssize_t currentRead, prevRead; //store the number of bytes read from each file
+
+    do
+    { 
+        //Reads lines from both snapshot files until the end of either file is reached
+        currentRead=read(snapshotFdCurrent, currentLine, sizeof(currentLine)-1);
+        prevRead=read(snapshotFdPrev, prevLine, sizeof(prevLine)-1);
+
+        currentLine[currentRead]='\0';
+        prevLine[prevRead]='\0';
+
+        //Checks if the number of bytes read are different.Compares the content of the read lines using strcmp
+        if((currentRead!=prevRead) || strcmp(currentLine, prevLine)!=0)
+        {
+            IsDifferent=1; //If differences are found (line lengths differ or content is different), sets IsDifferent to 1 and breaks out of the loop.
+            break;
+        }
+    }
+    while(currentRead > 0 && prevRead > 0); //Reading and comparing untill end of files
+
+    //Closes the file descriptors of both snapshot files after reading and comparison are completed
+    close(snapshotFdCurrent);
+    close(snapshotFdPrev);
+
+    return IsDifferent; //Returns IsDifferent (0 if no differences were found, 1 if differences were found) to the calling function (PreviousSnapshotCompare).
+}
+
+
+void CheckPermissionsAndAnalyze(const char *entryPath, struct stat filePermission, char *isolatedDir, int snapshotFd) 
+{
+    pid_t pid;
+    int pipe_fd[2];
+
+    // Create a pipe for inter-process communication
+    if (pipe(pipe_fd) == -1) 
+    {
+        // If pipe creation fails, print an error message and return
+        write(STDERR_FILENO, "Error: Pipe creation failed!\n", strlen("Error: Pipe creation failed!\n"));
+        return;
+    }
+
+    // Check if file has no access rights (read, write, execute)
+    if (!(filePermission.st_mode & S_IXUSR) && !(filePermission.st_mode & S_IRUSR) && !(filePermission.st_mode & S_IWUSR) &&
+        !(filePermission.st_mode & S_IRGRP) && !(filePermission.st_mode & S_IWGRP) && !(filePermission.st_mode & S_IXGRP) &&
+        !(filePermission.st_mode & S_IROTH) && !(filePermission.st_mode & S_IWOTH) && !(filePermission.st_mode & S_IXOTH)) 
+    {
+         // Print message indicating no access rights and perform syntactic analysis
+        fprintf(stdout, "No access rights for \"%s\" in \"%s\" => Performing Syntactic Analysis.\n", basename((char *)entryPath), monitoredDirName);
+
+        int fileStatus;
+        pid = fork(); // Create a new process (child process)
+        numSubProcesses++; // Create a new process (child process)
+
+        if (pid == 0) 
+        {
+            // Child process: close unnecessary file descriptors and execute file analysis
+            close(snapshotFd); // Close the file descriptor associated with the snapshot
+            close(pipe_fd[0]); // Close the read end of the pipe
+
+            fileStatus = AnalyzeFile(entryPath, pipe_fd[1]); // Execute file analysis and write results to pipe
+
+            close(pipe_fd[1]); // Close the write end of the pipe
+            exit(fileStatus); // Exit the child process with the file analysis status
+        } 
+        else if (pid < 0) 
+        {
+            // Fork failed: print an error message and return
+            write(STDERR_FILENO, "Error: Fork failed for child process!\n", strlen("Error: Fork failed for child process!\n"));
+            return;
+        } 
+        else 
+        {
+            // Parent process: handle analysis result from the child process
+            HandleAnalysisResult(pipe_fd, entryPath, isolatedDir, pid);
+        }
+
+        // Print termination message for the subprocess
+        fprintf(stdout, "Subprocess %d.%d (PID: %d) terminated with exit code %d for \"%s\" in \"%s\"\n", numProcesses, numSubProcesses, getpid(), pid, basename((char *)entryPath), monitoredDirName);
+        write(STDOUT_FILENO, "\n", 1);  // Write a newline to stdout
+    }
+}
+
+
+int AnalyzeFile(const char *entryPath, int pipeFd) 
+{
+    int giveAccess = chmod(entryPath, S_IRUSR); // Grant read permission to the file using chmod
+
+    // Create a command string to execute a shell script for analyzing file for malicious content
+    char scriptCommand[100];
+    snprintf(scriptCommand, sizeof(scriptCommand), "./verify_for_malicious.sh \"%s\"", entryPath);
+
+    int fileStatus = system(scriptCommand); // Execute the shell script command and capture its exit status
+    write(pipeFd, &fileStatus, sizeof(fileStatus)); // Write the exit status of the shell script to the pipe for communication with the parent process
+    close(pipeFd); // Close the write end of the pipe
+
+    giveAccess = chmod(entryPath, 0); // Revoke read permission from the file
+    close(giveAccess); // Close the file descriptor associated with the permission change
+
+    return fileStatus; // Return the exit status of the shell script (indicating analysis result)
+}
+
+void HandleAnalysisResult(int pipeFd[2], const char *entryPath, char *isolatedDir, pid_t pid) 
+{
+    close(pipeFd[1]); // Close the write end of the pipe (not needed for reading)
+
+    // Read the analysis result (fileStatus) from the pipe
+    int fileStatus;
+    read(pipeFd[0], &fileStatus, sizeof(fileStatus));
+    close(pipeFd[0]); // Close the read end of the pipe after reading
+
+    // Check the analysis result 
+    if (fileStatus != 0) 
+    {
+        // Prepare isolated directory path for moving the corrupted/malicious file
+        if (isolatedDir[strlen(isolatedDir) - 1] != '/')
+            strcat(isolatedDir, "/");
+
+        strcat(isolatedDir, basename((char *)entryPath));
+        rename(entryPath, isolatedDir); // Move the corrupted/malicious file to the isolated directory
+
+        numCorruptedFiles++; // Increment the count of corrupted/malicious files
+        
+        // Print a message indicating the file is malicious or corrupted and has been moved
+        fprintf(stdout, "\"%s\" in \"%s\" is malicious or corrupted => Moved to isolated directory.\n", basename((char *)entryPath), monitoredDirName);
+    } 
+    else 
+    {
+        // Print a message indicating the file is safe
+        fprintf(stdout, "\"%s\" in \"%s\" is safe.\n", basename((char *)entryPath), monitoredDirName);
+    }
 }
